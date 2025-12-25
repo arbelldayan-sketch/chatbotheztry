@@ -19,8 +19,9 @@ VERIFY_TOKEN = os.getenv('VERIFY_TOKEN', 'sea4u_verify_token_2024')
 PHONE_NUMBER_ID = os.getenv('PHONE_NUMBER_ID')
 
 # יצירת לקוח OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)
-
+client = OpenAI(
+    api_key=OPENAI_API_KEY
+)
 # טיימזון ישראל
 israel_tz = pytz.timezone('Asia/Jerusalem')
 
