@@ -1,7 +1,6 @@
 import os
 from flask import Flask, request
 import requests
-from openai import OpenAI
 from datetime import datetime
 import pytz
 
@@ -13,8 +12,16 @@ WHATSAPP_TOKEN = os.environ.get('WHATSAPP_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN', 'sea4u_verify_token_2024')
 
-# Initialize OpenAI client - FIXED!
-client = OpenAI(api_key=OPENAI_API_KEY)
+# DON'T initialize OpenAI at startup - do it inside function!
+openai_client = None
+
+def get_openai_client():
+    """Lazy load OpenAI client"""
+    global openai_client
+    if openai_client is None:
+        from openai import OpenAI
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    return openai_client
 
 # Store conversation history
 conversations = {}
@@ -58,6 +65,9 @@ def send_whatsapp_message(to_number, message):
 def get_ai_response(user_message, user_number):
     """Get AI response"""
     
+    # Get OpenAI client
+    client = get_openai_client()
+    
     if user_number not in conversations:
         conversations[user_number] = []
     
@@ -82,24 +92,11 @@ def get_ai_response(user_message, user_number):
 - אירועים: ימי הולדת, הצעות נישואין, מסיבות רווקים, שייט רומנטי, אירועי חברה, דיג
 
 המטרה שלך:
-1. לענות בעברית בלבד על כל שאלה
-2. לאסוף מידע: תאריך מועדף, מספר אנשים, שעה נוחה לשיחה
-3. להפנות לשיחת טלפון
+1. לענות בעברית בלבד
+2. לאסוף: תאריך, מספר אנשים, שעה נוחה לשיחה
+3. להפנות לטלפון
 
-סגנון:
-- קצר וידידותי (2-3 משפטים)
-- חם ומקצועי
-- תמיד ענה! גם על היי או שלום
-
-דוגמאות:
-משתמש: "Hi"
-אתה: "היי! 👋 שמח שפנית! Sea4U כאן - שייט ביאכטה עד 13 איש במרינה הרצליה. על איזה תאריך חשבת?"
-
-משתמש: "How much?"
-אתה: "המחירים שלנו בין 550-1,300 ש"ח. כמה אתם?"
-
-משתמש: "אנחנו 8"
-אתה: "מעולה! 8 זה מספר נהדר. על איזה תאריך חשבתם? אשמח לעבור איתך על כל הפרטים בטלפון 077-2310890"
+סגנון: קצר וידידותי (2-3 משפטים), תמיד ענה!
 
 זכור: תמיד ענה בעברית!"""
     
