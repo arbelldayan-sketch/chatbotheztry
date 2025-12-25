@@ -1,85 +1,53 @@
-"""
-Sea4U WhatsApp Bot - בוט חכם להשכרת יאכטות
-מבוסס בינה מלאכותית (OpenAI)
-"""
-
-from flask import Flask, request, jsonify
 import os
-from datetime import datetime, time
+from flask import Flask, request
 import requests
 from openai import OpenAI
+from datetime import datetime
 import pytz
 
 app = Flask(__name__)
 
-# הגדרות מפתחות API (יבואו מקובץ .env)
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-WHATSAPP_TOKEN = os.getenv('WHATSAPP_TOKEN')
-VERIFY_TOKEN = os.getenv('VERIFY_TOKEN', 'sea4u_verify_token_2024')
-PHONE_NUMBER_ID = os.getenv('PHONE_NUMBER_ID')
+# Environment variables
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+WHATSAPP_TOKEN = os.environ.get('WHATSAPP_TOKEN')
+PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
+VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN', 'sea4u_verify_token_2024')
 
-# יצירת לקוח OpenAI
-client = OpenAI(
-    api_key=OPENAI_API_KEY
-)
-# טיימזון ישראל
-israel_tz = pytz.timezone('Asia/Jerusalem')
+# Initialize OpenAI client - FIXED!
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Store conversation history
+conversations = {}
 
 def is_shabbat():
-    """
-    בודק אם עכשיו שבת
-    משתמש ב-API חיצוני לבדיקת זמני שבת
-    """
-    try:
-        now = datetime.now(israel_tz)
-        
-        # בדיקה פשוטה: שבת זה מיום שישי 18:00 עד שבת 20:30
-        # (זה קירוב - אפשר לשפר עם API של זמני שבת)
-        day_of_week = now.weekday()  # 4 = שישי, 5 = שבת
-        current_time = now.time()
-        
-        # יום שישי אחרי 18:00
-        if day_of_week == 4 and current_time >= time(18, 0):
-            return True
-        
-        # שבת עד 20:30
-        if day_of_week == 5 and current_time <= time(20, 30):
-            return True
-            
-        return False
-    except:
-        return False
-
-def is_working_hours():
-    """
-    בודק אם הבוט פעיל (7:00-21:00, לא בשבת)
-    """
-    if is_shabbat():
-        return False
-    
+    """Check if it's Shabbat"""
+    israel_tz = pytz.timezone('Asia/Jerusalem')
     now = datetime.now(israel_tz)
-    current_time = now.time()
     
-    # שעות פעילות: 7:00 - 21:00
-    if time(7, 0) <= current_time <= time(21, 0):
+    if now.weekday() == 4 and now.hour >= 18:
+        return True
+    
+    if now.weekday() == 5 and (now.hour < 20 or (now.hour == 20 and now.minute < 30)):
         return True
     
     return False
 
-def send_whatsapp_message(phone_number, message):
-    """
-    שולח הודעת טקסט ב-WhatsApp
-    """
+def is_working_hours():
+    """Check working hours 7-21"""
+    israel_tz = pytz.timezone('Asia/Jerusalem')
+    now = datetime.now(israel_tz)
+    return 7 <= now.hour < 21
+
+def send_whatsapp_message(to_number, message):
+    """Send WhatsApp message"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-    
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
     }
-    
     data = {
         "messaging_product": "whatsapp",
-        "to": phone_number,
+        "to": to_number,
         "type": "text",
         "text": {"body": message}
     }
@@ -87,214 +55,128 @@ def send_whatsapp_message(phone_number, message):
     response = requests.post(url, headers=headers, json=data)
     return response.json()
 
-def send_whatsapp_image(phone_number, image_url, caption=""):
-    """
-    שולח תמונה ב-WhatsApp
-    """
-    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+def get_ai_response(user_message, user_number):
+    """Get AI response"""
     
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
+    if user_number not in conversations:
+        conversations[user_number] = []
     
-    data = {
-        "messaging_product": "whatsapp",
-        "to": phone_number,
-        "type": "image",
-        "image": {
-            "link": image_url,
-            "caption": caption
-        }
-    }
+    conversations[user_number].append({
+        "role": "user",
+        "content": user_message
+    })
     
-    response = requests.post(url, headers=headers, json=data)
-    return response.json()
+    if len(conversations[user_number]) > 10:
+        conversations[user_number] = conversations[user_number][-10:]
+    
+    system_prompt = """אתה עוזר AI ידידותי של Sea4U - שירות השכרת יאכטות בהרצליה.
 
-def get_ai_response(user_message, conversation_history=[]):
-    """
-    מקבל תשובה מ-AI (OpenAI GPT)
-    """
+חשוב: ענה רק בעברית! תמיד בעברית!
+
+פרטי העסק:
+- שם: Sea4U
+- מיקום: מרינה הרצליה
+- טלפון: 077-2310890
+- קיבולת: עד 13 אנשים
+- מחירים: 550-1,300 ש"ח
+- אירועים: ימי הולדת, הצעות נישואין, מסיבות רווקים, שייט רומנטי, אירועי חברה, דיג
+
+המטרה שלך:
+1. לענות בעברית בלבד על כל שאלה
+2. לאסוף מידע: תאריך מועדף, מספר אנשים, שעה נוחה לשיחה
+3. להפנות לשיחת טלפון
+
+סגנון:
+- קצר וידידותי (2-3 משפטים)
+- חם ומקצועי
+- תמיד ענה! גם על היי או שלום
+
+דוגמאות:
+משתמש: "Hi"
+אתה: "היי! 👋 שמח שפנית! Sea4U כאן - שייט ביאכטה עד 13 איש במרינה הרצליה. על איזה תאריך חשבת?"
+
+משתמש: "How much?"
+אתה: "המחירים שלנו בין 550-1,300 ש"ח. כמה אתם?"
+
+משתמש: "אנחנו 8"
+אתה: "מעולה! 8 זה מספר נהדר. על איזה תאריך חשבתם? אשמח לעבור איתך על כל הפרטים בטלפון 077-2310890"
+
+זכור: תמיד ענה בעברית!"""
     
-    # הנחיות לבוט
-    system_prompt = """
-    אתה בוט וואטסאפ ידידותי ומקצועי עבור Sea4U - חברה להשכרת יאכטות יוקרה במרינה הרצליה.
-    
-    חשוב מאוד: 
-    - כתוב תמיד ורק בעברית!
-    - ענה על כל הודעה שמגיעה אליך (גם "היי", "שלום", "מה המחיר", "יש זמינות" וכו')
-    - תמיד היה חם, מקצועי ועוזר
-    
-    תפקידך:
-    - לעזור ללקוחות להזמין הפלגות ביאכטה
-    - לאסוף מידע: תאריך רצוי, כמה אנשים, מתי נוח שנתקשר
-    - להיות חם, מקצועי ועוזר
-    - לכתוב בעברית בלבד!
-    - לשמור על תשובות קצרות וברורות
-    
-    מידע חשוב על העסק:
-    - מיקום: מרינה הרצליה
-    - קיבולת היאכטה: עד 13 משתתפים
-    - בעלים: חזי דיין (סקיפר מנוסה משנת 1979)
-    - טלפון: 077-2310890
-    - מחירים: מ-550 ₪ לזוג, 600-1,300 ₪ לקבוצות
-    - אירועים: ימי הולדת, הצעות נישואין, מסיבות רווקים/ות, שייטים רומנטיים, אירועי חברות, הפלגות דייג
-    
-    זרימת השיחה:
-    1. קבל בחום את הלקוח (תגיד "שלום! איך נוכל לעזור לך?")
-    2. תן מידע קצר על היאכטה אם זה רלוונטי
-    3. אסוף מידע:
-       - תאריך רצוי להפלגה?
-       - כמה אנשים?
-       - מתי הכי נוח שנתקשר אליכם?
-    4. תודה ללקוח ואשר שחזי יחזור אליו
-    
-    חשוב:
-    - היה שיחתי וטבעי
-    - אל תשאל את כל השאלות בבת אחת
-    - אם הלקוח שואל שאלות, ענה עליהן קודם
-    - היה סבלני וידידותי
-    - כתוב בעברית בלבד!
-    - ענה על כל הודעה שמגיעה (גם "היי" או "שלום")
-    - אל תתעלם משום הודעה
-    
-    דוגמאות לפתיחות:
-    - אם מישהו כותב "היי" → תענה "שלום! איך נוכל לעזור לך? 😊"
-    - אם שואלים "מה המחיר?" → תסביר על המחירים ותשאל פרטים
-    - אם שואלים "יש זמינות?" → תשאל לאיזה תאריך ותסביר את התהליך
-    """
-    
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(conversation_history)
-    messages.append({"role": "user", "content": user_message})
+    messages = [
+        {"role": "system", "content": system_prompt}
+    ] + conversations[user_number]
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4-turbo-preview",
             messages=messages,
-            max_tokens=500,
+            max_tokens=150,
             temperature=0.7
         )
         
-        return response.choices[0].message.content
+        ai_message = response.choices[0].message.content
+        
+        conversations[user_number].append({
+            "role": "assistant",
+            "content": ai_message
+        })
+        
+        return ai_message
+        
     except Exception as e:
-        print(f"OpenAI Error: {e}")
-        return "סליחה, יש לי בעיה טכנית כרגע. אנא התקשרו אלינו: 077-2310890"
+        print(f"OpenAI Error: {str(e)}")
+        return "מצטער, יש בעיה טכנית. תחייג ל-077-2310890 בבקשה 🙏"
 
-# אחסון שיחות (בפרודקשן צריך database)
-conversations = {}
-
-@app.route('/webhook', methods=['GET'])
-def verify_webhook():
-    """
-    אימות webhook של Meta
-    """
-    mode = request.args.get('hub.mode')
-    token = request.args.get('hub.verify_token')
-    challenge = request.args.get('hub.challenge')
-    
-    if mode == 'subscribe' and token == VERIFY_TOKEN:
-        print("Webhook verified successfully!")
-        return challenge, 200
-    else:
-        return 'Verification failed', 403
-
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    """
-    מקבל הודעות מ-WhatsApp
-    """
-    try:
+    if request.method == 'GET':
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+        
+        if mode == 'subscribe' and token == VERIFY_TOKEN:
+            return challenge, 200
+        else:
+            return 'Forbidden', 403
+    
+    elif request.method == 'POST':
         data = request.get_json()
         
-        # בדיקה שיש הודעה
-        if not data.get('entry'):
-            return jsonify({'status': 'no entry'}), 200
+        try:
+            entry = data['entry'][0]
+            changes = entry['changes'][0]
+            value = changes['value']
             
-        entry = data['entry'][0]
-        changes = entry.get('changes', [])
+            if 'messages' in value:
+                message = value['messages'][0]
+                from_number = message['from']
+                message_body = message['text']['body']
+                
+                print(f"Received: {message_body} from {from_number}")
+                
+                if is_shabbat():
+                    response_text = "שבת שלום! 🕯️ אנחנו לא זמינים בשבת. נחזור במוצאי שבת!"
+                    send_whatsapp_message(from_number, response_text)
+                    return 'OK', 200
+                
+                if not is_working_hours():
+                    response_text = "תודה! 🌙 אנחנו זמינים 7:00-21:00. נחזור אליך מחר!"
+                    send_whatsapp_message(from_number, response_text)
+                    return 'OK', 200
+                
+                ai_response = get_ai_response(message_body, from_number)
+                send_whatsapp_message(from_number, ai_response)
         
-        if not changes:
-            return jsonify({'status': 'no changes'}), 200
-            
-        change = changes[0]
-        value = change.get('value', {})
-        messages = value.get('messages', [])
+        except Exception as e:
+            print(f"Error: {str(e)}")
         
-        if not messages:
-            return jsonify({'status': 'no messages'}), 200
-        
-        message = messages[0]
-        phone_number = message['from']
-        message_type = message.get('type')
-        
-        # רק הודעות טקסט
-        if message_type != 'text':
-            return jsonify({'status': 'not text'}), 200
-        
-        user_message = message['text']['body']
-        
-        print(f"Received from {phone_number}: {user_message}")
-        
-        # בדיקת שעות פעילות
-        if not is_working_hours():
-            if is_shabbat():
-                response_text = "שבת שלום! 🕯️\n\nאנחנו שומרי שבת ונחזור אליכם במוצאי שבת.\n\nלדחוף: 077-2310890"
-            else:
-                response_text = "תודה על ההודעה! 🌙\n\nהצוות שלנו זמין בין השעות 07:00-21:00.\n\nנחזור אליכם בשעות הפעילות.\n\nלדחוף: 077-2310890"
-            
-            send_whatsapp_message(phone_number, response_text)
-            return jsonify({'status': 'success'}), 200
-        
-        # קבלת היסטוריית שיחה
-        if phone_number not in conversations:
-            conversations[phone_number] = []
-        
-        conversation_history = conversations[phone_number]
-        
-        # קבלת תשובה מ-AI
-        ai_response = get_ai_response(user_message, conversation_history)
-        
-        # שמירת השיחה
-        conversation_history.append({"role": "user", "content": user_message})
-        conversation_history.append({"role": "assistant", "content": ai_response})
-        conversations[phone_number] = conversation_history[-10:]  # שמירת 10 הודעות אחרונות
-        
-        # שליחת התשובה
-        send_whatsapp_message(phone_number, ai_response)
-        
-        print(f"Sent to {phone_number}: {ai_response}")
-        
-        return jsonify({'status': 'success'}), 200
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return 'OK', 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    """
-    בדיקת תקינות השרת
-    """
-    return jsonify({
-        'status': 'healthy',
-        'working_hours': is_working_hours(),
-        'is_shabbat': is_shabbat(),
-        'time': datetime.now(israel_tz).isoformat()
-    }), 200
-
-@app.route('/', methods=['GET'])
-def home():
-    """
-    דף הבית
-    """
-    return """
-    <h1>🚤 Sea4U WhatsApp Bot</h1>
-    <p>Bot is running!</p>
-    <p>Status: Active ✅</p>
-    <p><a href="/health">Check Health</a></p>
-    """
+    return {'status': 'healthy', 'service': 'Sea4U WhatsApp Bot'}, 200
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
